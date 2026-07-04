@@ -60,7 +60,7 @@ export type WalletLoadResult =
  *
  * 1. Validates the address has a sane format before touching storage.
  * 2. Writes to on-device Keychain (always).
- * 3. If a Supabase session exists, upserts user_profiles.lightning_address
+ * 3. If a Supabase session exists, updates user_profiles.lightning_address
  *    and sets payment_preference = 'sats'.
  *
  * Returns { success: true } on full success.
@@ -102,25 +102,20 @@ export async function saveLightningAddress(
     } = await supabase.auth.getSession();
 
     if (session?.user?.id) {
-      const { error: upsertError } = await supabase
+      const { error: updateError } = await supabase
         .from('user_profiles')
-        .upsert(
-          {
-            id: session.user.id,
-            lightning_address: trimmed,
-            payment_preference: 'sats',
-            updated_at: new Date().toISOString(),
-          },
-          {
-            onConflict: 'id',
-          },
-        );
+        .update({
+          lightning_address: trimmed,
+          payment_preference: 'sats',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', session.user.id);
 
-      if (upsertError) {
+      if (updateError) {
         // Log but don't surface to user — local Keychain save already succeeded.
         console.warn(
           '[walletStorage] Supabase sync failed (will retry on next open):',
-          upsertError.message,
+          updateError.message,
         );
       } else {
         console.log(
