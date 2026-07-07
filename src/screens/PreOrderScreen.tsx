@@ -137,9 +137,7 @@ interface OrderResult {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatSats(sats: number): string {
-  if (sats >= 1_000_000) return `${(sats / 1_000_000).toFixed(2)}M sats`;
-  if (sats >= 1_000)     return `${(sats / 1_000).toFixed(1)}k sats`;
-  return `${sats} sats`;
+  return `${sats.toLocaleString()} sats`;
 }
 
 function formatGbp(n: number): string {
@@ -540,9 +538,7 @@ function InvoiceView({
             </View>
           </View>
 
-          <Text style={s.rateText}>
-            Rate: £{result.rate_gbp_per_btc.toLocaleString()}/BTC
-          </Text>
+          <Text style={s.feeHint}>Network fee varies · zero fees with Blink Wallet</Text>
         </View>
 
         {/* Countdown ───────────────────────────────────────── */}
@@ -753,6 +749,7 @@ const s = StyleSheet.create({
   amountGbp:        { fontFamily: 'IBM Plex Mono', fontWeight: '600', fontSize: 24, color: C.textPrimary },
   amountSats:       { fontFamily: 'IBM Plex Mono', fontWeight: '600', fontSize: 20, color: C.gold, textAlign: 'right' },
   rateText:         { fontFamily: 'DM Sans', fontWeight: '300', fontSize: 11, color: C.textTertiary },
+  feeHint:          { fontFamily: 'DM Sans', fontWeight: '400', fontSize: 13, color: C.textSecondary, marginBottom: 12, marginTop: 4 },
 
   countdownRow:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: C.carbonSurface, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 11, marginBottom: 14 },
   countdownExpired: { backgroundColor: C.dangerSubtle },
