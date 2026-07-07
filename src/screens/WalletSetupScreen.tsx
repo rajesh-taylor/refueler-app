@@ -120,10 +120,7 @@ export default function WalletSetupScreen({
         setLightningInput(result.lightningAddress);
         setActivePanel('lightning');
         setValidationState({ status: 'saved' });
-        console.log(
-          '[WalletSetupScreen] Pre-loaded saved lightning address:',
-          result.lightningAddress,
-        );
+        if (__DEV__) console.log('[WalletSetupScreen] Pre-loaded saved lightning address:', result.lightningAddress);
       }
     }
     checkPersistedWallet();
@@ -227,11 +224,7 @@ export default function WalletSetupScreen({
       status: 'saved',
     });
 
-    console.log(
-      '[WalletSetupScreen] Wallet saved successfully:',
-      address,
-      description ? `(${description})` : '',
-    );
+    if (__DEV__) console.log('[WalletSetupScreen] Wallet saved successfully:', address, description ? `(${description})` : '');
 
     // Small delay so the user sees the success state before navigating
     setTimeout(() => {

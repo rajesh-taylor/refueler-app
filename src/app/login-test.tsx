@@ -89,7 +89,7 @@ export default function LoginTestScreen() {
       return;
     }
 
-    console.log(`[login-test] Magic link requested for ${trimmed} → redirectTo=${redirectTo}`);
+    if (__DEV__) console.log(`[login-test] Magic link requested for ${trimmed} → redirectTo=${redirectTo}`);
     setState('sent');
   }
 
@@ -158,7 +158,7 @@ export default function LoginTestScreen() {
             </>
           )}
 
-          <Text style={styles.footnote}>redirectTo: {redirectTo}</Text>
+          {/* redirectTo footnote removed — CC-privacy-sweep C-3 */}
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

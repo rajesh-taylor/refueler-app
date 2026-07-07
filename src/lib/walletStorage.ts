@@ -118,15 +118,10 @@ export async function saveLightningAddress(
           updateError.message,
         );
       } else {
-        console.log(
-          '[walletStorage] Synced lightning_address to user_profiles:',
-          trimmed,
-        );
+        if (__DEV__) console.log('[walletStorage] Synced lightning_address to user_profiles:', trimmed);
       }
     } else {
-      console.log(
-        '[walletStorage] No session — Keychain-only save. Will sync on next sign-in.',
-      );
+      if (__DEV__) console.log('[walletStorage] No session — Keychain-only save. Will sync on next sign-in.');
     }
   } catch (err) {
     // Network offline, etc. — local save still succeeded.
@@ -157,10 +152,7 @@ export async function loadLightningAddress(): Promise<WalletLoadResult> {
     });
 
     if (credentials && credentials.password) {
-      console.log(
-        '[walletStorage] Loaded lightning address from Keychain:',
-        credentials.password,
-      );
+      if (__DEV__) console.log('[walletStorage] Loaded lightning address from Keychain:', credentials.password);
       return { found: true, lightningAddress: credentials.password };
     }
   } catch (err) {
@@ -183,10 +175,7 @@ export async function loadLightningAddress(): Promise<WalletLoadResult> {
         .single();
 
       if (!error && data?.lightning_address) {
-        console.log(
-          '[walletStorage] Loaded lightning address from Supabase (re-caching to Keychain):',
-          data.lightning_address,
-        );
+        if (__DEV__) console.log('[walletStorage] Loaded lightning address from Supabase (re-caching to Keychain):', data.lightning_address);
 
         // Re-cache locally so the next load is fast/offline.
         await Keychain.setGenericPassword(

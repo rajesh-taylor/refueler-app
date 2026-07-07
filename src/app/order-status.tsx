@@ -21,7 +21,7 @@ import {
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../lib/supabaseClient.native';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

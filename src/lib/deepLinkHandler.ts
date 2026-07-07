@@ -72,10 +72,7 @@ export async function handleDeepLink(url: string | null): Promise<void> {
     return;
   }
 
-  console.log(
-    '[deepLinkHandler] Session established for',
-    data.session?.user?.email ?? '(no email on session)',
-  );
+  if (__DEV__) console.log('[deepLinkHandler] Session established for', data.session?.user?.email ?? '(no email on session)');
 }
 
 /**
