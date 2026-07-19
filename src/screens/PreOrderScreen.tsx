@@ -18,6 +18,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter } from 'expo-router';
 import {
   ActivityIndicator,
   Clipboard,
@@ -71,6 +72,7 @@ const VENUE_MENUS: Record<string, MenuItem[]> = {
     { id: 'bsc-2', name: 'Oat Latte',        description: 'Single origin espresso, oat milk',      price_gbp: 4.20, category: 'hot_drinks' },
     { id: 'bsc-3', name: 'Cold Brew',         description: '12-hour steep, served over ice',        price_gbp: 4.50, category: 'cold_drinks' },
     { id: 'bsc-4', name: 'Espresso',          description: 'Double shot, short and strong',         price_gbp: 2.80, category: 'hot_drinks' },
+   { id: 'bsc-dev', name: 'Dev Test',        description: '[Dev only — 21 sats]',                  price_gbp: 0.01, category: 'other' },
     { id: 'bsc-5', name: 'Banana Bread',      description: 'House baked, served warm',             price_gbp: 3.50, category: 'food' },
     { id: 'bsc-6', name: 'Almond Croissant',  description: 'Frangipane filled, flaky pastry',      price_gbp: 3.80, category: 'food' },
   ],
@@ -178,6 +180,7 @@ function timeRemaining(expiresAt: string): string {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function PreOrderScreen() {
+  const router = useRouter();
   const [view, setView]           = useState<ViewName>('venue');
   const [venues, setVenues]       = useState<Venue[]>([]);
   const [loading, setLoading]     = useState(true);
@@ -228,6 +231,36 @@ export default function PreOrderScreen() {
     }, 1000);
     return () => clearInterval(id);
   }, [view, orderResult]);
+
+  // ── Settlement Realtime — navigate to order-status when paid ─────────────
+
+  useEffect(() => {
+    if (!orderResult?.order_id) return;
+
+    const sub = supabase
+      .channel(`preorder-settlement-${orderResult.order_id}`)
+      .on(
+        'postgres_changes',
+        {
+          event:  'UPDATE',
+          schema: 'public',
+          table:  'orders',
+          filter: `id=eq.${orderResult.order_id}`,
+        },
+        (payload) => {
+          if (payload.new.payment_status === 'paid') {
+            sub.unsubscribe();
+            router.replace({
+              pathname: '/order-status',
+              params:   { orderId: orderResult.order_id },
+            } as any);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => { sub.unsubscribe(); };
+  }, [orderResult?.order_id]);
 
   // ── Navigation ────────────────────────────────────────────────────────────
 
