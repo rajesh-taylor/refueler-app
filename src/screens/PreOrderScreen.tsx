@@ -480,8 +480,10 @@ function SettledView({
   data: SettledData;
   onDone: () => void;
 }) {
-  const net = data.routing_fee_sats !== null
-    ? data.settled_sats - data.routing_fee_sats
+  const fee = data.routing_fee_sats;
+  const feeLabel = (fee === null || fee === 0) ? 'fee: pending' : `${fee.toLocaleString()} sats`;
+  const net = (fee !== null && fee > 0)
+    ? data.settled_sats - fee
     : null;
 
   const shortRef = data.order_id.replace(/-/g, '').slice(0, 8).toUpperCase();
@@ -516,11 +518,7 @@ function SettledView({
           <View style={s.amountDivider} />
           <View>
             <Text style={s.settledAmountLabel}>Routing fee</Text>
-            <Text style={s.settledAmountValue}>
-              {data.routing_fee_sats !== null
-                ? `${data.routing_fee_sats.toLocaleString()} sats`
-                : 'pending'}
-            </Text>
+            <Text style={s.settledAmountValue}>{feeLabel}</Text>
           </View>
           <View style={s.amountDivider} />
           <View style={{ alignItems: 'flex-end' }}>
@@ -535,7 +533,7 @@ function SettledView({
       {/* Collection reference */}
       <View style={s.settledRefBlock}>
         <Text style={s.settledRefCode}>{shortRef}</Text>
-        <Text style={s.settledRefHint}>Show this to collect your order</Text>
+        <Text style={s.settledRefHint}>Show this at the counter to collect</Text>
       </View>
 
       {/* Order another */}
@@ -971,7 +969,7 @@ const s = StyleSheet.create({
   settledAmountLabel:{ fontFamily: 'DM Sans', fontWeight: '300', fontSize: 10, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 3 },
   settledAmountValue:{ fontFamily: 'IBM Plex Mono', fontWeight: '500', fontSize: 13, color: C.textPrimary },
 
-  settledRefBlock: { alignItems: 'center', paddingVertical: 20, gap: 6 },
+  settledRefBlock: { alignItems: 'center', paddingVertical: 20, gap: 8 },
   settledRefCode:  { fontFamily: 'IBM Plex Mono', fontWeight: '700', fontSize: 30, color: C.textPrimary, letterSpacing: 6 },
-  settledRefHint:  { fontFamily: 'DM Sans', fontWeight: '300', fontSize: 12, color: C.textTertiary, letterSpacing: 0.3 },
+  settledRefHint:  { fontFamily: 'DM Sans', fontWeight: '500', fontSize: 14, color: C.textSecondary, letterSpacing: 0.3 },
 });
