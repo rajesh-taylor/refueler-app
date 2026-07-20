@@ -23,7 +23,6 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useRouter } from 'expo-router';
 import {
   ActivityIndicator,
   AppState,
@@ -129,7 +128,16 @@ interface Venue {
   active:        boolean;
 }
 
-type ViewName = 'venue' | 'menu' | 'invoice';
+type ViewName = 'venue' | 'menu' | 'invoice' | 'settled';
+
+interface SettledData {
+  settled_sats:     number;
+  routing_fee_sats: number | null;
+  item_name:        string;
+  venue_name:       string;
+  order_id:         string;
+  city:             string | null;
+}
 
 interface OrderResult {
   order_id:          string;
@@ -186,7 +194,6 @@ function timeRemaining(expiresAt: string): string {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function PreOrderScreen() {
-  const router = useRouter();
   const [view, setView]           = useState<ViewName>('venue');
   const [venues, setVenues]       = useState<Venue[]>([]);
   const [loading, setLoading]     = useState(true);
@@ -198,6 +205,7 @@ export default function PreOrderScreen() {
   const [ordering,     setOrdering]    = useState(false);
   const [orderError,   setOrderError]  = useState<string | null>(null);
   const [orderResult,  setOrderResult] = useState<OrderResult | null>(null);
+  const [settledData,  setSettledData] = useState<SettledData | null>(null);
 
   const [copied,    setCopied]    = useState(false);
   const [countdown, setCountdown] = useState('');
@@ -242,12 +250,9 @@ export default function PreOrderScreen() {
   }, [view, orderResult]);
 
   // ── Settlement: Realtime + poll + AppState foreground guard ─────────────────
-  // Three-layer defence:
-  //   1. Realtime — fires immediately if app is foregrounded at settlement time
-  //   2. Poll — 3s backstop, skipped while app is backgrounded
-  //   3. AppState listener — the moment user returns from Minibits (or any
-  //      other wallet), check DB and navigate if already paid
-  // navigatedRef prevents double-navigation if multiple layers fire.
+  // On payment confirmed: fetch order row for fee data, switch to 'settled' view.
+  // No router navigation — NativeTabs cannot push to sibling routes.
+  // navigatedRef prevents double-execution if multiple layers fire simultaneously.
 
   useEffect(() => {
     if (!orderResult?.order_id) return;
@@ -255,19 +260,34 @@ export default function PreOrderScreen() {
     navigatedRef.current = false;
     const orderId = orderResult.order_id;
 
-    async function checkAndNavigate(): Promise<boolean> {
+    let appStateSub: { remove: () => void } | null = null;
+
+    async function checkAndSettle(): Promise<boolean> {
       if (navigatedRef.current) return true;
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('orders')
-        .select('payment_status')
+        .select('payment_status, settled_sats, routing_fee_sats, item_name')
         .eq('id', orderId)
         .maybeSingle();
+      if (error) {
+        console.warn('[PreOrderScreen] checkAndSettle query error:', error.message);
+        return false;
+      }
+      console.log('[PreOrderScreen] checkAndSettle:', data?.payment_status, 'settled_sats:', data?.settled_sats);
       if (data?.payment_status === 'paid') {
         navigatedRef.current = true;
         clearInterval(pollId);
         sub.unsubscribe();
-        AppState.removeEventListener('change', onAppStateChange);
-        router.replace({ pathname: '/order-status', params: { orderId } } as any);
+        appStateSub?.remove();
+        setSettledData({
+          settled_sats:     data.settled_sats ?? orderResult.satoshis,
+          routing_fee_sats: data.routing_fee_sats ?? null,
+          item_name:        data.item_name ?? selectedItem?.name ?? '',
+          venue_name:       selectedVenue?.name ?? '',
+          order_id:         orderId,
+          city:             null,
+        });
+        setView('settled');
         return true;
       }
       return false;
@@ -281,14 +301,8 @@ export default function PreOrderScreen() {
         { event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${orderId}` },
         (payload) => {
           if (payload.new.payment_status === 'paid') {
-            console.log('[PreOrderScreen] Realtime: payment_status=paid, navigating');
-            clearInterval(pollId);
-            sub.unsubscribe();
-            AppState.removeEventListener('change', onAppStateChange);
-            if (!navigatedRef.current) {
-              navigatedRef.current = true;
-              router.replace({ pathname: '/order-status', params: { orderId } } as any);
-            }
+            console.log('[PreOrderScreen] Realtime: payment_status=paid, settling');
+            checkAndSettle();
           }
         }
       )
@@ -307,24 +321,23 @@ export default function PreOrderScreen() {
         clearInterval(pollId);
         return;
       }
-      const settled = await checkAndNavigate();
-      if (settled) console.log('[PreOrderScreen] Poll: payment_status=paid, navigating');
+      const settled = await checkAndSettle();
+      if (settled) console.log('[PreOrderScreen] Poll: settled');
     }, POLL_INTERVAL_MS);
 
     // 3. AppState guard — fires the moment user returns to foreground
-    const onAppStateChange = async (nextState: string) => {
+    appStateSub = AppState.addEventListener('change', async (nextState) => {
       if (nextState === 'active') {
         console.log('[PreOrderScreen] AppState: foregrounded, checking payment status');
-        const settled = await checkAndNavigate();
-        if (settled) console.log('[PreOrderScreen] AppState: payment_status=paid, navigating');
+        const settled = await checkAndSettle();
+        if (settled) console.log('[PreOrderScreen] AppState: settled');
       }
-    };
-    AppState.addEventListener('change', onAppStateChange);
+    });
 
     return () => {
       sub.unsubscribe();
       clearInterval(pollId);
-      AppState.removeEventListener('change', onAppStateChange);
+      appStateSub?.remove();
     };
   }, [orderResult?.order_id]);
 
@@ -450,7 +463,86 @@ export default function PreOrderScreen() {
           onOpenWallet={openInWallet}
           onCopy={copyInvoice}
         />}
+      {view === 'settled' && settledData && <SettledView
+          data={settledData}
+          onDone={backToVenues}
+        />}
     </SafeAreaView>
+  );
+}
+
+// ─── View 4: Settled ──────────────────────────────────────────────────────────
+
+function SettledView({
+  data,
+  onDone,
+}: {
+  data: SettledData;
+  onDone: () => void;
+}) {
+  const net = data.routing_fee_sats !== null
+    ? data.settled_sats - data.routing_fee_sats
+    : null;
+
+  const shortRef = data.order_id.replace(/-/g, '').slice(0, 8).toUpperCase();
+
+  return (
+    <ScrollView
+      style={s.flex}
+      contentContainerStyle={s.listContent}
+      showsVerticalScrollIndicator={false}
+    >
+      {/* Confirmed banner */}
+      <View style={s.settledBanner}>
+        <View style={s.settledDotWrap}>
+          <View style={s.settledDot} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={s.settledLabel}>Payment received</Text>
+          <Text style={s.settledVenue}>{data.venue_name}</Text>
+        </View>
+      </View>
+
+      {/* Item + sats */}
+      <View style={s.settledCard}>
+        <Text style={s.settledItemName}>{data.item_name}</Text>
+        {data.city ? <Text style={s.settledCity}>{data.city}</Text> : null}
+
+        <View style={s.settledAmountRow}>
+          <View>
+            <Text style={s.settledAmountLabel}>Gross</Text>
+            <Text style={s.settledAmountValue}>{data.settled_sats.toLocaleString()} sats</Text>
+          </View>
+          <View style={s.amountDivider} />
+          <View>
+            <Text style={s.settledAmountLabel}>Routing fee</Text>
+            <Text style={s.settledAmountValue}>
+              {data.routing_fee_sats !== null
+                ? `${data.routing_fee_sats.toLocaleString()} sats`
+                : 'pending'}
+            </Text>
+          </View>
+          <View style={s.amountDivider} />
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={s.settledAmountLabel}>Net</Text>
+            <Text style={[s.settledAmountValue, { color: C.gold }]}>
+              {net !== null ? `${net.toLocaleString()} sats` : '—'}
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Collection reference */}
+      <View style={s.settledRefBlock}>
+        <Text style={s.settledRefCode}>{shortRef}</Text>
+        <Text style={s.settledRefHint}>Show this to collect your order</Text>
+      </View>
+
+      {/* Order another */}
+      <TouchableOpacity style={s.secondaryBtn} onPress={onDone} activeOpacity={0.8}>
+        <Text style={s.secondaryBtnText}>Order again</Text>
+      </TouchableOpacity>
+    </ScrollView>
   );
 }
 
@@ -648,31 +740,23 @@ function InvoiceView({
           {!expired && <Text style={s.countdownTimer}>{countdown}</Text>}
         </View>
 
-        {/* BOLT11 string ───────────────────────────────────── */}
-        <View style={s.invoiceStringCard}>
-          <Text style={s.invoiceStringLabel}>BOLT11 invoice</Text>
-          <Text style={s.invoiceString} numberOfLines={3} ellipsizeMode="tail">
-            {result.payment_request}
-          </Text>
-        </View>
-
         {/* CTAs ────────────────────────────────────────────── */}
-        {!expired && (
-          <TouchableOpacity style={s.primaryBtn} onPress={onOpenWallet} activeOpacity={0.8}>
-            <Text style={s.primaryBtnText}>Open in Lightning wallet ↗</Text>
-          </TouchableOpacity>
-        )}
-
         <TouchableOpacity
-          style={[s.secondaryBtn, copied && s.secondaryBtnSuccess]}
+          style={[s.primaryBtn, (expired) && s.primaryBtnDisabled, copied && { backgroundColor: C.success }]}
           onPress={onCopy}
           activeOpacity={0.8}
           disabled={expired}
         >
-          <Text style={[s.secondaryBtnText, copied && { color: C.success }]}>
+          <Text style={s.primaryBtnText}>
             {copied ? '✓ Copied' : 'Copy invoice string'}
           </Text>
         </TouchableOpacity>
+
+        {!expired && (
+          <TouchableOpacity style={s.secondaryBtn} onPress={onOpenWallet} activeOpacity={0.8}>
+            <Text style={s.secondaryBtnText}>Open in Lightning wallet ↗</Text>
+          </TouchableOpacity>
+        )}
 
         {expired && (
           <TouchableOpacity style={s.primaryBtn} onPress={onBack} activeOpacity={0.8}>
@@ -863,4 +947,31 @@ const s = StyleSheet.create({
   // Footnotes
   footnote:      { fontFamily: 'DM Sans', fontWeight: '300', fontSize: 12, color: C.textTertiary, marginTop: 16, lineHeight: 18 },
   footnoteCentre: { fontFamily: 'DM Sans', fontWeight: '300', fontSize: 12, color: C.textTertiary, textAlign: 'center', marginTop: 2, marginBottom: 10, lineHeight: 18 },
+
+  // Settled view
+  settledBanner: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: C.carbonSurface, borderRadius: 14,
+    borderWidth: 1, borderColor: 'rgba(76, 175, 125, 0.35)',
+    padding: 18, gap: 14, marginBottom: 14, marginTop: 24,
+  },
+  settledDotWrap: { width: 20, height: 20, alignItems: 'center', justifyContent: 'center' },
+  settledDot:     { width: 10, height: 10, borderRadius: 5, backgroundColor: C.success },
+  settledLabel:   { fontFamily: 'DM Sans', fontWeight: '600', fontSize: 15, color: C.success, marginBottom: 2 },
+  settledVenue:   { fontFamily: 'DM Sans', fontWeight: '300', fontSize: 13, color: C.textSecondary },
+
+  settledCard: {
+    backgroundColor: C.carbonSurface, borderRadius: 14,
+    borderWidth: 1, borderColor: C.carbonBorderActive,
+    padding: 20, marginBottom: 14,
+  },
+  settledItemName:   { fontFamily: 'Satoshi', fontWeight: '600', fontSize: 22, color: C.textPrimary, letterSpacing: -0.2, marginBottom: 4 },
+  settledCity:       { fontFamily: 'DM Sans', fontWeight: '300', fontSize: 12, color: C.textTertiary, marginBottom: 16 },
+  settledAmountRow:  { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
+  settledAmountLabel:{ fontFamily: 'DM Sans', fontWeight: '300', fontSize: 10, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 3 },
+  settledAmountValue:{ fontFamily: 'IBM Plex Mono', fontWeight: '500', fontSize: 13, color: C.textPrimary },
+
+  settledRefBlock: { alignItems: 'center', paddingVertical: 20, gap: 6 },
+  settledRefCode:  { fontFamily: 'IBM Plex Mono', fontWeight: '700', fontSize: 30, color: C.textPrimary, letterSpacing: 6 },
+  settledRefHint:  { fontFamily: 'DM Sans', fontWeight: '300', fontSize: 12, color: C.textTertiary, letterSpacing: 0.3 },
 });
