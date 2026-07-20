@@ -1,5 +1,5 @@
 /**
- * PreOrderScreen.tsx — CC-68
+ * PreOrderScreen.tsx — CC-69
  *
  * Core commuter pre-order flow. Three sequential views:
  *
@@ -13,9 +13,11 @@
  *   VIEW 3 — INVOICE
  *     Calls create-order Edge Function → gets BOLT11.
  *     Countdown timer, copy + open-in-wallet actions.
- *     Settlement: Realtime subscription + polling fallback (3s interval,
- *     5 min window) to handle timing race where webhook fires before
- *     subscription is established.
+ *     Settlement: three-layer defence —
+ *       1. Realtime subscription (immediate, when foregrounded)
+ *       2. Poll fallback 3s interval, 5 min window (foregrounded only)
+ *       3. AppState listener — navigates the moment user returns from
+ *          a backgrounded payment (e.g. switching to Minibits to pay)
  *
  * Design: Carbon dark, gold accent, Satoshi / DM Sans / IBM Plex Mono.
  */
@@ -24,6 +26,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
 import {
   ActivityIndicator,
+  AppState,
   Clipboard,
   Linking,
   Pressable,
@@ -238,87 +241,90 @@ export default function PreOrderScreen() {
     return () => clearInterval(id);
   }, [view, orderResult]);
 
-  // ── Settlement: Realtime + polling fallback ───────────────────────────────
-  // Realtime handles the normal case. Polling is a backstop for the timing
-  // race where the webhook fires before the subscription is established.
-  // navigatedRef prevents double-navigation if both fire.
+  // ── Settlement: Realtime + poll + AppState foreground guard ─────────────────
+  // Three-layer defence:
+  //   1. Realtime — fires immediately if app is foregrounded at settlement time
+  //   2. Poll — 3s backstop, skipped while app is backgrounded
+  //   3. AppState listener — the moment user returns from Minibits (or any
+  //      other wallet), check DB and navigate if already paid
+  // navigatedRef prevents double-navigation if multiple layers fire.
 
   useEffect(() => {
     if (!orderResult?.order_id) return;
 
     navigatedRef.current = false;
-
     const orderId = orderResult.order_id;
 
-    function navigateToOrderStatus() {
-      if (navigatedRef.current) return;
-      navigatedRef.current = true;
-      router.replace({
-        pathname: '/order-status',
-        params:   { orderId },
-      } as any);
+    async function checkAndNavigate(): Promise<boolean> {
+      if (navigatedRef.current) return true;
+      const { data } = await supabase
+        .from('orders')
+        .select('payment_status')
+        .eq('id', orderId)
+        .maybeSingle();
+      if (data?.payment_status === 'paid') {
+        navigatedRef.current = true;
+        clearInterval(pollId);
+        sub.unsubscribe();
+        AppState.removeEventListener('change', onAppStateChange);
+        router.replace({ pathname: '/order-status', params: { orderId } } as any);
+        return true;
+      }
+      return false;
     }
 
-    // Realtime subscription
+    // 1. Realtime subscription
     const sub = supabase
       .channel(`preorder-settlement-${orderId}`)
       .on(
         'postgres_changes',
-        {
-          event:  'UPDATE',
-          schema: 'public',
-          table:  'orders',
-          filter: `id=eq.${orderId}`,
-        },
+        { event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${orderId}` },
         (payload) => {
           if (payload.new.payment_status === 'paid') {
             console.log('[PreOrderScreen] Realtime: payment_status=paid, navigating');
-            sub.unsubscribe();
             clearInterval(pollId);
-            navigateToOrderStatus();
+            sub.unsubscribe();
+            AppState.removeEventListener('change', onAppStateChange);
+            if (!navigatedRef.current) {
+              navigatedRef.current = true;
+              router.replace({ pathname: '/order-status', params: { orderId } } as any);
+            }
           }
         }
       )
       .subscribe();
 
-    // Polling fallback — 3s interval, 5 minute window
+    // 2. Poll — 3s interval, 5 min window, skipped while backgrounded
     const POLL_INTERVAL_MS = 3000;
     const POLL_TIMEOUT_MS  = 5 * 60 * 1000;
     const pollStart        = Date.now();
 
     const pollId = setInterval(async () => {
-      if (navigatedRef.current) {
-        clearInterval(pollId);
-        return;
-      }
+      if (navigatedRef.current) { clearInterval(pollId); return; }
+      if (AppState.currentState !== 'active') return;
       if (Date.now() - pollStart > POLL_TIMEOUT_MS) {
         console.log('[PreOrderScreen] Poll: 5 min window elapsed, stopping');
         clearInterval(pollId);
         return;
       }
-
-      const { data, error } = await supabase
-        .from('orders')
-        .select('payment_status')
-        .eq('id', orderId)
-        .maybeSingle();
-
-      if (error) {
-        console.warn('[PreOrderScreen] Poll error:', error.message);
-        return;
-      }
-
-      if (data?.payment_status === 'paid') {
-        console.log('[PreOrderScreen] Poll: payment_status=paid, navigating');
-        clearInterval(pollId);
-        sub.unsubscribe();
-        navigateToOrderStatus();
-      }
+      const settled = await checkAndNavigate();
+      if (settled) console.log('[PreOrderScreen] Poll: payment_status=paid, navigating');
     }, POLL_INTERVAL_MS);
+
+    // 3. AppState guard — fires the moment user returns to foreground
+    const onAppStateChange = async (nextState: string) => {
+      if (nextState === 'active') {
+        console.log('[PreOrderScreen] AppState: foregrounded, checking payment status');
+        const settled = await checkAndNavigate();
+        if (settled) console.log('[PreOrderScreen] AppState: payment_status=paid, navigating');
+      }
+    };
+    AppState.addEventListener('change', onAppStateChange);
 
     return () => {
       sub.unsubscribe();
       clearInterval(pollId);
+      AppState.removeEventListener('change', onAppStateChange);
     };
   }, [orderResult?.order_id]);
 
