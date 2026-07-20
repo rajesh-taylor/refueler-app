@@ -1,5 +1,5 @@
 /**
- * PreOrderScreen.tsx — CC-62
+ * PreOrderScreen.tsx — CC-68
  *
  * Core commuter pre-order flow. Three sequential views:
  *
@@ -13,6 +13,9 @@
  *   VIEW 3 — INVOICE
  *     Calls create-order Edge Function → gets BOLT11.
  *     Countdown timer, copy + open-in-wallet actions.
+ *     Settlement: Realtime subscription + polling fallback (3s interval,
+ *     5 min window) to handle timing race where webhook fires before
+ *     subscription is established.
  *
  * Design: Carbon dark, gold accent, Satoshi / DM Sans / IBM Plex Mono.
  */
@@ -196,6 +199,9 @@ export default function PreOrderScreen() {
   const [copied,    setCopied]    = useState(false);
   const [countdown, setCountdown] = useState('');
 
+  // Ref to guard against navigating twice (Realtime + poll both firing)
+  const navigatedRef = useRef(false);
+
   // ── Load active venues ────────────────────────────────────────────────────
 
   const loadVenues = useCallback(async () => {
@@ -232,34 +238,88 @@ export default function PreOrderScreen() {
     return () => clearInterval(id);
   }, [view, orderResult]);
 
-  // ── Settlement Realtime — navigate to order-status when paid ─────────────
+  // ── Settlement: Realtime + polling fallback ───────────────────────────────
+  // Realtime handles the normal case. Polling is a backstop for the timing
+  // race where the webhook fires before the subscription is established.
+  // navigatedRef prevents double-navigation if both fire.
 
   useEffect(() => {
     if (!orderResult?.order_id) return;
 
+    navigatedRef.current = false;
+
+    const orderId = orderResult.order_id;
+
+    function navigateToOrderStatus() {
+      if (navigatedRef.current) return;
+      navigatedRef.current = true;
+      router.replace({
+        pathname: '/order-status',
+        params:   { orderId },
+      } as any);
+    }
+
+    // Realtime subscription
     const sub = supabase
-      .channel(`preorder-settlement-${orderResult.order_id}`)
+      .channel(`preorder-settlement-${orderId}`)
       .on(
         'postgres_changes',
         {
           event:  'UPDATE',
           schema: 'public',
           table:  'orders',
-          filter: `id=eq.${orderResult.order_id}`,
+          filter: `id=eq.${orderId}`,
         },
         (payload) => {
           if (payload.new.payment_status === 'paid') {
+            console.log('[PreOrderScreen] Realtime: payment_status=paid, navigating');
             sub.unsubscribe();
-            router.replace({
-              pathname: '/order-status',
-              params:   { orderId: orderResult.order_id },
-            } as any);
+            clearInterval(pollId);
+            navigateToOrderStatus();
           }
         }
       )
       .subscribe();
 
-    return () => { sub.unsubscribe(); };
+    // Polling fallback — 3s interval, 5 minute window
+    const POLL_INTERVAL_MS = 3000;
+    const POLL_TIMEOUT_MS  = 5 * 60 * 1000;
+    const pollStart        = Date.now();
+
+    const pollId = setInterval(async () => {
+      if (navigatedRef.current) {
+        clearInterval(pollId);
+        return;
+      }
+      if (Date.now() - pollStart > POLL_TIMEOUT_MS) {
+        console.log('[PreOrderScreen] Poll: 5 min window elapsed, stopping');
+        clearInterval(pollId);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('orders')
+        .select('payment_status')
+        .eq('id', orderId)
+        .maybeSingle();
+
+      if (error) {
+        console.warn('[PreOrderScreen] Poll error:', error.message);
+        return;
+      }
+
+      if (data?.payment_status === 'paid') {
+        console.log('[PreOrderScreen] Poll: payment_status=paid, navigating');
+        clearInterval(pollId);
+        sub.unsubscribe();
+        navigateToOrderStatus();
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      sub.unsubscribe();
+      clearInterval(pollId);
+    };
   }, [orderResult?.order_id]);
 
   // ── Navigation ────────────────────────────────────────────────────────────
